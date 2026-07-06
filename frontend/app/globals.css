@@ -1,0 +1,87 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: 255 255 255;
+    --foreground: 15 23 42;
+    --muted: 241 245 249;
+    --muted-foreground: 71 85 105;
+    --border: 203 213 225;
+    --card: 255 255 255;
+    --card-foreground: 15 23 42;
+    --accent: 37 99 235;
+    --accent-foreground: 255 255 255;
+    --sidebar: 248 250 252;
+    --sidebar-border: 203 213 225;
+    --focus-ring: 37 99 235;
+  }
+
+  .dark {
+    --background: 15 23 42;
+    --foreground: 241 245 249;
+    --muted: 30 41 59;
+    --muted-foreground: 168 185 207;
+    --border: 71 85 105;
+    --card: 30 41 59;
+    --card-foreground: 241 245 249;
+    --accent: 96 165 250;
+    --accent-foreground: 15 23 42;
+    --sidebar: 15 23 42;
+    --sidebar-border: 71 85 105;
+    --focus-ring: 96 165 250;
+  }
+
+  body {
+    @apply bg-[rgb(var(--background))] text-[rgb(var(--foreground))];
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+
+  /* Ensure focus-visible outlines are always visible for keyboard navigation */
+  *:focus-visible {
+    @apply outline-2 outline-offset-2 outline-[rgb(var(--focus-ring))];
+    outline-style: solid;
+  }
+
+  /* Skip to content link — WCAG 2.1 AA */
+  .skip-to-content {
+    @apply absolute left-4 top-4 z-[100] -translate-y-full rounded-lg
+           bg-[rgb(var(--accent))] px-4 py-2 text-sm font-medium
+           text-[rgb(var(--accent-foreground))] transition-transform
+           focus:translate-y-0;
+  }
+}
+
+@layer components {
+  .sidebar-link {
+    @apply flex items-center gap-3 rounded-lg px-3 py-2.5 text-sm font-medium
+           min-h-[44px]
+           text-[rgb(var(--muted-foreground))] transition-colors
+           hover:bg-[rgb(var(--muted))] hover:text-[rgb(var(--foreground))]
+           focus-visible:outline-2 focus-visible:outline-offset-2
+           focus-visible:outline-[rgb(var(--focus-ring))];
+  }
+
+  .sidebar-link-active {
+    @apply bg-[rgb(var(--muted))] text-[rgb(var(--foreground))];
+  }
+
+  .card {
+    @apply rounded-xl border border-[rgb(var(--border))] bg-[rgb(var(--card))] p-6
+           text-[rgb(var(--card-foreground))] shadow-sm;
+  }
+
+  /* Ensure all interactive elements have minimum 44x44 touch target on mobile */
+  @media (max-width: 767px) {
+    button,
+    a,
+    [role="button"],
+    select,
+    input[type="checkbox"],
+    input[type="radio"] {
+      min-height: 44px;
+      min-width: 44px;
+    }
+  }
+}

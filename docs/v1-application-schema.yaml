@@ -1,0 +1,282 @@
+# application_schema.yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# Master Architectural Schema for the GKIM Opportunity Finder
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# This file is the single source of truth for the application's structure.
+# It drives:
+#   - Navigation layout (primary tabs, sub-tabs, pill panels)
+#   - Asset management patterns (which assets belong to which beneficiary)
+#   - Discovery, preparation, and outreach strategies
+#   - Pipeline state machines per opportunity type
+#   - Object-oriented class structure (enums, services, managers)
+#
+# To add a new beneficiary or opportunity type, edit this file and implement
+# the referenced service classes. Navigation and routing derive automatically.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+schema_version: "1.0"
+
+
+# ─── STAGES (Primary Tabs) ───────────────────────────────────────────────────
+# Each stage maps to a primary navigation tab. Order here = display order.
+
+stages:
+  - id: understand
+    label: "Understand Us"
+    description: "Define who we are and what we offer"
+
+  - id: configure
+    label: "Define Where to Look"
+    description: "Configure opportunity sources per type"
+
+  - id: find
+    label: "Find Prospects"
+    description: "Discover opportunities from configured sources"
+
+  - id: pipeline
+    label: "Application Pipeline"
+    description: "Triage, prepare materials, submit, track outcomes"
+
+  - id: reports
+    label: "Reports"
+    description: "Analytics, gap analysis, and performance tracking"
+
+
+# ─── BENEFICIARIES (Sub-Tab axis) ────────────────────────────────────────────
+# Each beneficiary represents a class of opportunity pursuer.
+# Sub-tabs within each stage are derived from this list.
+#
+# baseline_assets: Bucket 1 (singleton) assets that define the beneficiary
+# offerings_asset: Bucket 2 (collection) asset defining what they offer to do
+# search_criteria_asset: Bucket 2 (collection) asset defining what to search for
+
+beneficiaries:
+  - id: consultant
+    label: "Consultant"
+    description: "Individual GKIM consultants deployed against opportunities"
+    baseline_assets:
+      - resume              # Bucket 1 — singleton binary (PDF/DOCX)
+      - cover_letter        # Bucket 1 — singleton binary (PDF/DOCX)
+      - instructions        # Bucket 1 — singleton text (LLM generation instructions)
+    offerings_asset: consultant_profiles    # Bucket 2 — collection of deployment angles
+    offerings_label: "Offerings"
+    search_criteria_asset: company_search_criteria  # Bucket 2 — what to search for
+
+  - id: team
+    label: "Team"
+    description: "GKIM as a firm pursuing project and contract opportunities"
+    baseline_assets:
+      - company_profile     # Bucket 1 — singleton structured data
+    offerings_asset: company_documents      # Bucket 2 — capability statements, case studies, proposal templates
+    offerings_label: "Offerings"
+    search_criteria_asset: project_search_criteria  # Bucket 2 — what to search for
+
+
+# ─── OPPORTUNITY TYPES ────────────────────────────────────────────────────────
+# The M:N link between beneficiaries and sources.
+# Each opportunity type defines:
+#   - Which beneficiaries can pursue it
+#   - Where to look (source_asset)
+#   - How to find (find_technique)
+#   - How to prepare materials (prepare_technique)
+#   - How to reach out (outreach_technique)
+#   - What pipeline states apply
+
+opportunity_types:
+  - id: job_site
+    label: "Job Sites"
+    beneficiaries: [consultant]
+    source_asset: job_sites
+    source_label: "Manage Job Sites"
+    find_technique: adzuna_discovery
+    find_label: "From Job Sites"
+    prepare_technique: cv_and_cover_letter
+    outreach_technique: manual_apply
+    pipeline_states:
+      - Personalise
+      - Approve
+      - Applied
+      - Interview
+      - Offer
+      - Accepted
+      - Rejected
+      - Abandoned
+
+  - id: company
+    label: "Companies"
+    beneficiaries: [consultant]
+    source_asset: company_search_criteria
+    source_label: "Manage Company Search Criteria"
+    find_technique: company_discovery
+    find_label: "From Companies"
+    prepare_technique: cv_and_cover_letter
+    outreach_technique: manual_apply
+    pipeline_states:
+      - Personalise
+      - Approve
+      - Applied
+      - Interview
+      - Offer
+      - Accepted
+      - Rejected
+      - Abandoned
+
+  - id: project_marketplace
+    label: "Project Marketplaces"
+    beneficiaries: [team]
+    source_asset: project_marketplaces
+    source_label: "Manage Project Marketplaces"
+    find_technique: project_discovery
+    find_label: "From Marketplaces"
+    prepare_technique: proposal_composition
+    outreach_technique: tender_submission
+    pipeline_states:
+      - Expression of Interest
+      - Proposal Submitted
+      - Shortlisted
+      - Won
+      - Lost
+
+  - id: cold_outreach
+    label: "Target Companies"
+    beneficiaries: [consultant]
+    source_asset: outreach_target_criteria
+    source_label: "Manage Outreach Criteria"
+    find_technique: company_enrichment
+    find_label: "From Cold Outreach"
+    prepare_technique: cold_email_composition
+    outreach_technique: email_send
+    pipeline_states:
+      - Drafted
+      - Approved
+      - Sent
+      - Replied
+      - Meeting Booked
+      - Converted
+      - Rejected
+      - Abandoned
+
+
+# ─── FIND TECHNIQUES ─────────────────────────────────────────────────────────
+# Strategy classes for discovering opportunities.
+# Each technique knows how to search a particular source type.
+
+find_techniques:
+  - id: adzuna_discovery
+    service_class: AdzunaDiscoveryService
+    description: "Searches Adzuna API using profile target roles and job site URLs"
+
+  - id: company_discovery
+    service_class: CompanyDiscoveryService
+    description: "Searches company career pages using search criteria phrases"
+
+  - id: project_discovery
+    service_class: ProjectDiscoveryService
+    description: "Searches project marketplaces using project search criteria"
+
+  - id: company_enrichment
+    service_class: CompanyEnrichmentService
+    description: "Discovers target companies via LLM search and enriches with hook/contact research"
+
+
+# ─── PREPARE TECHNIQUES ──────────────────────────────────────────────────────
+# Strategy classes for generating submission materials.
+# Each technique declares its required inputs (asset references) and outputs.
+
+prepare_techniques:
+  - id: cv_and_cover_letter
+    service_class: CVGeneratorService
+    description: "Generates tailored CV and cover letter via LLM"
+    inputs:
+      - resume              # Baseline CV text
+      - cover_letter        # Baseline cover letter text
+      - instructions        # Generation instructions
+      - consultant_profiles # Active offering/profile for angle selection
+    outputs:
+      - tailored_cv
+      - tailored_cover_letter
+      - reasoning_log
+      - gap_analysis
+
+  - id: proposal_composition
+    service_class: ProposalCompositionService
+    description: "Generates project proposal from company profile and case studies"
+    inputs:
+      - company_profile     # Company credentials and description
+      - company_documents   # Capability statements, case studies, templates
+    outputs:
+      - proposal_document
+      - executive_summary
+
+  - id: cold_email_composition
+    service_class: ColdEmailComposerService
+    description: "Drafts short, direct cold emails using identified hooks and dedicated instructions"
+    inputs:
+      - cold_email_instructions
+      - consultant_profiles
+    outputs:
+      - draft_email
+
+
+# ─── OUTREACH TECHNIQUES ─────────────────────────────────────────────────────
+# Strategy classes for submitting/applying to opportunities.
+
+outreach_techniques:
+  - id: manual_apply
+    service_class: ManualOutreachService
+    description: "User applies manually — system provides original listing link and tracks submission date"
+
+  - id: tender_submission
+    service_class: TenderSubmissionService
+    description: "Formal tender or expression of interest submission process"
+
+  - id: email_send
+    service_class: EmailSendService
+    description: "Sends approved emails via Gmail API with OAuth2 authentication"
+
+
+# ─── PIPELINE CONFIGURATION ──────────────────────────────────────────────────
+# Shared pipeline view configuration.
+# Filters allow narrowing by beneficiary, opportunity type, and status.
+
+pipeline:
+  filters:
+    - by: beneficiary
+      label: "Filter by Type"
+    - by: opportunity_type
+      label: "Filter by Source"
+    - by: status
+      label: "Filter by Status"
+  shared_tools:
+    - form_assistance     # Available across all opportunity types
+    - notes               # Free-text notes on any application
+    - follow_up_dates     # Reminder scheduling
+
+
+# ─── NAVIGATION DERIVATION RULES ─────────────────────────────────────────────
+# These rules describe how the UI is generated from the schema above.
+# They are documentation — not executable config.
+#
+# Primary Tab = stages[].label (in order)
+#
+# Sub-Tab per stage:
+#   "understand"  → one sub-tab per beneficiary
+#   "configure"   → one sub-tab per beneficiary (showing their source assets)
+#   "find"        → one sub-tab per beneficiary (showing their opportunity types)
+#   "pipeline"    → shared view with filters (no sub-tabs by beneficiary)
+#   "reports"     → shared view (no sub-tabs by beneficiary)
+#
+# Pill Panels per sub-tab:
+#   "understand" > {beneficiary}:
+#     - "Establish Baseline" → baseline_assets[] for this beneficiary
+#     - "{offerings_label}" → offerings_asset for this beneficiary
+#     - "Customisation Instructions" → instructions asset (if in baseline_assets)
+#
+#   "configure" > {beneficiary}:
+#     - One pill per opportunity_type.source_label where beneficiary matches
+#     - Plus: search_criteria_asset pill if defined
+#
+#   "find" > {beneficiary}:
+#     - One pill per opportunity_type.find_label where beneficiary matches

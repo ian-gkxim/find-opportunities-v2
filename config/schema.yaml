@@ -1,0 +1,224 @@
+# config/schema.yaml
+# ═══════════════════════════════════════════════════════════════════════════════
+# GKIM Opportunity Finder v2 — Master Schema
+# ═══════════════════════════════════════════════════════════════════════════════
+#
+# Single source of truth for navigation, pipeline states, technique wiring,
+# and beneficiary definitions. Adding new beneficiaries, opportunity types,
+# or pipeline states is a configuration change — not a code change.
+#
+# ═══════════════════════════════════════════════════════════════════════════════
+
+schema_version: "2.0"
+
+
+# ─── STAGES (Primary Navigation Tabs) ────────────────────────────────────────
+
+stages:
+  - id: understand
+    label: "Understand Us"
+    description: "Define who we are and what we offer"
+
+  - id: configure
+    label: "Define Where to Look"
+    description: "Configure opportunity sources per type"
+
+  - id: find
+    label: "Find Prospects"
+    description: "Discover opportunities from configured sources"
+
+  - id: pipeline
+    label: "Application Pipeline"
+    description: "Triage, prepare materials, submit, track outcomes"
+
+  - id: reports
+    label: "Reports & Analytics"
+    description: "Conversion analytics, ROI tracking, and performance metrics"
+
+
+# ─── BENEFICIARIES ────────────────────────────────────────────────────────────
+
+beneficiaries:
+  - id: consultant
+    label: "Consultant"
+    description: "Individual GKIM consultants deployed against opportunities"
+    baseline_assets:
+      - resume
+      - cover_letter
+      - instructions
+    offerings_asset: consultant_profiles
+    offerings_label: "Offerings"
+    search_criteria_asset: company_search_criteria
+
+  - id: team
+    label: "Team"
+    description: "GKIM as a firm pursuing project and contract opportunities"
+    baseline_assets:
+      - company_profile
+      - capability_statement
+    offerings_asset: company_documents
+    offerings_label: "Offerings"
+    search_criteria_asset: project_search_criteria
+
+
+# ─── OPPORTUNITY TYPES ────────────────────────────────────────────────────────
+
+opportunity_types:
+  - id: job_site
+    label: "Job Sites"
+    beneficiaries: [consultant]
+    source_asset: job_sites
+    source_label: "Manage Job Sites"
+    find_technique: adzuna_discovery
+    find_label: "From Job Sites"
+    prepare_technique: cv_and_cover_letter
+    outreach_technique: manual_apply
+    pipeline_states:
+      - Personalise
+      - Approve
+      - Applied
+      - Interview
+      - Offer
+      - Accepted
+      - Rejected
+
+  - id: company
+    label: "Companies"
+    beneficiaries: [consultant]
+    source_asset: company_search_criteria
+    source_label: "Manage Company Search Criteria"
+    find_technique: apollo_company_search
+    find_label: "From Companies"
+    prepare_technique: cv_and_cover_letter
+    outreach_technique: manual_apply
+    pipeline_states:
+      - Personalise
+      - Approve
+      - Applied
+      - Interview
+      - Offer
+      - Accepted
+      - Rejected
+
+  - id: cold_outreach_consultant
+    label: "Cold Outreach (Consultant)"
+    beneficiaries: [consultant]
+    source_asset: outreach_target_criteria
+    source_label: "Manage Outreach Criteria"
+    find_technique: apollo_company_search
+    find_label: "From Cold Outreach"
+    prepare_technique: cold_email_composition
+    outreach_technique: lemlist_sequence
+    pipeline_states:
+      - Drafted
+      - Sent
+      - Replied
+      - Meeting Booked
+      - Converted
+
+  - id: cold_outreach_team
+    label: "Cold Outreach (Team)"
+    beneficiaries: [team]
+    source_asset: team_outreach_criteria
+    source_label: "Manage Team Outreach Criteria"
+    find_technique: apollo_company_search
+    find_label: "From Cold Outreach"
+    prepare_technique: proposal_composition
+    outreach_technique: lemlist_sequence
+    pipeline_states:
+      - Drafted
+      - Sent
+      - Replied
+      - Proposal Requested
+      - Won
+      - Lost
+
+  - id: project_marketplace
+    label: "Project Marketplaces"
+    beneficiaries: [team]
+    source_asset: project_marketplaces
+    source_label: "Manage Project Marketplaces"
+    find_technique: project_discovery
+    find_label: "From Marketplaces"
+    prepare_technique: proposal_composition
+    outreach_technique: tender_submission
+    pipeline_states:
+      - Expression of Interest
+      - Proposal Submitted
+      - Shortlisted
+      - Won
+      - Lost
+
+
+# ─── FIND TECHNIQUES ─────────────────────────────────────────────────────────
+
+find_techniques:
+  - id: adzuna_discovery
+    service_class: AdzunaDiscoveryService
+    description: "Searches Adzuna API using profile target roles and locations"
+
+  - id: apollo_company_search
+    service_class: ApolloCompanySearchService
+    description: "Searches Apollo.io for companies matching criteria with enrichment"
+
+  - id: project_discovery
+    service_class: ProjectDiscoveryService
+    description: "Searches project marketplaces using project search criteria"
+
+  - id: internet_search
+    service_class: InternetSearchService
+    description: "Searches the internet for relevant opportunities via configured search backend"
+
+
+# ─── PREPARE TECHNIQUES ──────────────────────────────────────────────────────
+
+prepare_techniques:
+  - id: cv_and_cover_letter
+    service_class: CVGeneratorService
+    description: "Generates tailored CV and cover letter via LLM using enrichment data"
+    inputs:
+      - resume
+      - cover_letter
+      - instructions
+      - consultant_profiles
+    outputs:
+      - tailored_cv
+      - tailored_cover_letter
+      - reasoning_log
+
+  - id: cold_email_composition
+    service_class: ColdEmailComposerService
+    description: "Drafts personalized cold emails using Apollo enrichment and hooks"
+    inputs:
+      - cold_email_instructions
+      - consultant_profiles
+      - enrichment_record
+    outputs:
+      - draft_email
+
+  - id: proposal_composition
+    service_class: ProposalCompositionService
+    description: "Generates project proposals from company profile, case studies, and enrichment"
+    inputs:
+      - company_profile
+      - company_documents
+      - enrichment_record
+    outputs:
+      - proposal_document
+      - executive_summary
+
+
+# ─── OUTREACH TECHNIQUES ─────────────────────────────────────────────────────
+
+outreach_techniques:
+  - id: manual_apply
+    service_class: ManualOutreachService
+    description: "User applies manually — system provides listing link and tracks submission"
+
+  - id: lemlist_sequence
+    service_class: LemlistSequenceService
+    description: "Multi-channel automated outreach via Lemlist with A/B testing"
+
+  - id: tender_submission
+    service_class: TenderSubmissionService
+    description: "Formal tender or expression of interest submission process"
