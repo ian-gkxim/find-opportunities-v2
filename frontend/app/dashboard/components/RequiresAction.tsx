@@ -24,6 +24,14 @@ const TYPE_ICONS: Record<ActionItem["type"], { icon: string; color: string }> = 
     icon: "🔴",
     color: "border-l-red-400",
   },
+  grounding_blocked: {
+    icon: "🚫",
+    color: "border-l-red-600",
+  },
+  grounding_unverified: {
+    icon: "❓",
+    color: "border-l-yellow-500",
+  },
 };
 
 export function RequiresAction({ items }: RequiresActionProps) {

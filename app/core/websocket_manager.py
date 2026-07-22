@@ -26,6 +26,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from app.core.redis import (
+    CHANNEL_GAP_UPDATES,
     CHANNEL_NOTIFICATIONS,
     CHANNEL_PIPELINE_UPDATES,
     CHANNEL_SCORE_CHANGES,
@@ -208,6 +209,47 @@ class WebSocketManager:
             prospect_id,
             new_score,
             new_tier,
+        )
+
+    async def broadcast_heatmap_available(
+        self, beneficiary_id: str, heatmap_id: str, generated_at: str
+    ) -> None:
+        """Broadcast notification that a new gap heatmap is available.
+
+        Publishes to Redis pub/sub channel "gap_updates" for multi-worker
+        broadcast, and sends directly to all local WebSocket connections.
+
+        Message format:
+        {
+            "type": "gap_heatmap_available",
+            "beneficiary_id": "consultant_1",
+            "heatmap_id": "uuid",
+            "generated_at": "2024-01-15T02:30:00Z"
+        }
+
+        Args:
+            beneficiary_id: The Beneficiary (Consultant or "__firm__") the heatmap belongs to.
+            heatmap_id: UUID of the generated heatmap.
+            generated_at: ISO-8601 timestamp of heatmap generation.
+        """
+        message = json.dumps({
+            "type": "gap_heatmap_available",
+            "beneficiary_id": beneficiary_id,
+            "heatmap_id": heatmap_id,
+            "generated_at": generated_at,
+        })
+
+        if self._redis:
+            await self._redis.publish(CHANNEL_GAP_UPDATES, message)
+        else:
+            await publish_event(CHANNEL_GAP_UPDATES, message)
+
+        await self._send_to_all(message)
+
+        logger.debug(
+            "Published gap heatmap available: beneficiary=%s, heatmap=%s",
+            beneficiary_id,
+            heatmap_id,
         )
 
     async def _send_to_user(self, user_id: str, message: str) -> None:

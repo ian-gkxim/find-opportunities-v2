@@ -9,6 +9,8 @@ import { RequiresAction } from "./components/RequiresAction";
 import { HotProspects } from "./components/HotProspects";
 import { QuickActions } from "./components/QuickActions";
 import { BeneficiaryToggle } from "./components/BeneficiaryToggle";
+import { GroundingNotifications } from "./components/GroundingNotifications";
+import { SourceFailureNotifications } from "./components/SourceFailureNotifications";
 import type { DashboardData, Beneficiary } from "./types";
 import { fetchDashboardData } from "./mock-data";
 
@@ -125,6 +127,10 @@ export function DashboardContent() {
         <section aria-labelledby="requires-action-heading">
           <h2 id="requires-action-heading" className="sr-only">Requires Action</h2>
           <RequiresAction items={data.requiresAction} />
+          {/* Real-time grounding notifications — Requirements 1.4, 3.1 */}
+          <GroundingNotifications />
+          {/* Source failure notices for profile enrichment — Requirements 1.4, 3.1 */}
+          <SourceFailureNotifications />
         </section>
 
         {/* Hot Prospects — Requirement 3.4 */}

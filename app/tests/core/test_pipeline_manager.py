@@ -567,3 +567,174 @@ class TestBroadcastBehavior:
         # Should not raise
         result = await manager.advance_on_reply("rec-1", "Hello!")
         assert result.result == PipelineTransitionResult.ADVANCED
+
+
+# --- Grounding Gate Integration Tests ---
+
+
+class FakeGateService:
+    """Fake PipelineGateService for testing grounding gate integration."""
+
+    def __init__(
+        self,
+        blocked_records: dict[str, list] | None = None,
+    ):
+        """
+        Args:
+            blocked_records: Mapping of pipeline_record_id to list of
+                ungrounded claims to return when blocked. If a record_id
+                is in this dict, can_transition returns (False, claims).
+        """
+        self._blocked = blocked_records or {}
+
+    async def can_transition(
+        self, pipeline_record_id: str, target_state: str
+    ) -> tuple[bool, list | None]:
+        from app.core.pipeline_gate import PipelineGateService
+
+        if target_state not in PipelineGateService.GATED_STATES:
+            return (True, None)
+
+        if pipeline_record_id in self._blocked:
+            return (False, self._blocked[pipeline_record_id])
+
+        return (True, None)
+
+
+class TestGroundingGateIntegration:
+    """Tests for PipelineGateService integration in pipeline state transitions.
+
+    Requirements: 3.1 — Ungrounded claims block pipeline advancement to
+    gated states (Approve, Applied, Sent, Proposal Submitted).
+    """
+
+    @pytest.mark.asyncio
+    async def test_transition_blocked_by_grounding_gate(self):
+        """When gate_service blocks transition, result is GROUNDING_BLOCKED."""
+        record = make_record(record_id="rec-1", current_status="Drafted")
+        repo = FakeRepository([record])
+        fake_claims = [{"id": "claim-1", "text": "10 years Python"}]
+        gate = FakeGateService(blocked_records={"rec-1": fake_claims})
+        manager = PipelineManager(
+            repository=repo, gate_service=gate
+        )
+
+        result = await manager.transition_to("rec-1", "Approve")
+
+        assert result.result == PipelineTransitionResult.GROUNDING_BLOCKED
+        assert result.record_id == "rec-1"
+        assert result.previous_status == "Drafted"
+        assert result.new_status == "Approve"
+        assert result.ungrounded_claims == fake_claims
+        assert "blocked" in result.reason.lower()
+        # Pipeline record should NOT have been updated
+        assert repo.records["rec-1"].current_status == "Drafted"
+
+    @pytest.mark.asyncio
+    async def test_transition_allowed_when_gate_passes(self):
+        """When gate_service allows transition, pipeline advances normally."""
+        record = make_record(record_id="rec-1", current_status="Drafted")
+        repo = FakeRepository([record])
+        gate = FakeGateService(blocked_records={})  # No blocks
+        manager = PipelineManager(
+            repository=repo, gate_service=gate
+        )
+
+        result = await manager.transition_to("rec-1", "Approve")
+
+        assert result.result == PipelineTransitionResult.ADVANCED
+        assert result.new_status == "Approve"
+        assert repo.records["rec-1"].current_status == "Approve"
+
+    @pytest.mark.asyncio
+    async def test_gate_not_checked_for_non_gated_states(self):
+        """Non-gated states bypass the grounding gate entirely."""
+        record = make_record(record_id="rec-1", current_status="Sent")
+        repo = FakeRepository([record])
+        # Block everything — should still pass for "Replied" (non-gated)
+        gate = FakeGateService(blocked_records={"rec-1": []})
+        manager = PipelineManager(
+            repository=repo, gate_service=gate
+        )
+
+        result = await manager.advance_on_reply("rec-1", "Hello!")
+
+        # "Replied" is NOT a gated state, so gate allows it
+        assert result.result == PipelineTransitionResult.ADVANCED
+        assert result.new_status == "Replied"
+
+    @pytest.mark.asyncio
+    async def test_gate_blocks_all_gated_states(self):
+        """Gate blocks transitions to all four gated states."""
+        gated_states = ["Approve", "Applied", "Sent", "Proposal Submitted"]
+        fake_claims = [{"id": "c-1", "text": "ungrounded claim"}]
+
+        for target in gated_states:
+            record = make_record(
+                record_id=f"rec-{target}",
+                current_status="Drafted",
+            )
+            repo = FakeRepository([record])
+            gate = FakeGateService(
+                blocked_records={f"rec-{target}": fake_claims}
+            )
+            manager = PipelineManager(
+                repository=repo, gate_service=gate
+            )
+
+            result = await manager.transition_to(f"rec-{target}", target)
+
+            assert result.result == PipelineTransitionResult.GROUNDING_BLOCKED, (
+                f"Expected GROUNDING_BLOCKED for target state '{target}'"
+            )
+            assert result.ungrounded_claims == fake_claims
+
+    @pytest.mark.asyncio
+    async def test_no_gate_service_allows_all_transitions(self):
+        """When no gate_service is injected, all transitions proceed freely."""
+        record = make_record(record_id="rec-1", current_status="Drafted")
+        repo = FakeRepository([record])
+        # No gate_service provided
+        manager = PipelineManager(repository=repo)
+
+        result = await manager.transition_to("rec-1", "Approve")
+
+        assert result.result == PipelineTransitionResult.ADVANCED
+        assert result.new_status == "Approve"
+
+    @pytest.mark.asyncio
+    async def test_gate_blocked_returns_ungrounded_claims_for_ui(self):
+        """Blocked transition includes the ungrounded claims list for UI display."""
+        record = make_record(record_id="rec-1", current_status="Drafted")
+        repo = FakeRepository([record])
+        claims = [
+            {"id": "c-1", "text": "Expert in Kubernetes"},
+            {"id": "c-2", "text": "15 years of experience"},
+        ]
+        gate = FakeGateService(blocked_records={"rec-1": claims})
+        manager = PipelineManager(
+            repository=repo, gate_service=gate
+        )
+
+        result = await manager.transition_to("rec-1", "Sent")
+
+        assert result.result == PipelineTransitionResult.GROUNDING_BLOCKED
+        assert result.ungrounded_claims == claims
+        assert len(result.ungrounded_claims) == 2
+
+    @pytest.mark.asyncio
+    async def test_gate_blocked_empty_claims_still_blocks(self):
+        """When gate returns (False, []) (no report), transition is still blocked."""
+        record = make_record(record_id="rec-1", current_status="Drafted")
+        repo = FakeRepository([record])
+        # Empty claims list = no report exists
+        gate = FakeGateService(blocked_records={"rec-1": []})
+        manager = PipelineManager(
+            repository=repo, gate_service=gate
+        )
+
+        result = await manager.transition_to("rec-1", "Applied")
+
+        assert result.result == PipelineTransitionResult.GROUNDING_BLOCKED
+        assert result.ungrounded_claims == []
+        assert "0 ungrounded claim" in result.reason

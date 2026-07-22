@@ -17,6 +17,7 @@ import {
   LabelList,
   Cell,
 } from "recharts";
+import { GroundingAnalytics } from "./GroundingAnalytics";
 
 type PeriodDays = 7 | 30 | 90;
 type Beneficiary = "all" | "consultant" | "team";
@@ -345,6 +346,9 @@ export default function AnalyticsPage() {
           </ResponsiveContainer>
         </div>
       </div>
+
+      {/* Grounding Analytics — Requirement 4.2 */}
+      <GroundingAnalytics />
     </div>
   );
 }

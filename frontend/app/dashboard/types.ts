@@ -28,7 +28,12 @@ export interface TopProspect {
 
 export interface ActionItem {
   id: string;
-  type: "stale_followup" | "failed_sequence" | "enrichment_error";
+  type:
+    | "stale_followup"
+    | "failed_sequence"
+    | "enrichment_error"
+    | "grounding_blocked"
+    | "grounding_unverified";
   title: string;
   description: string;
   companyName: string;

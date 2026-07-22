@@ -200,6 +200,33 @@ class MonthlyTrend:
     conversion_rate: float
 
 
+@dataclass(frozen=True)
+class VoiceSegmentedFunnel:
+    """Funnel metrics segmented by voice_applied status.
+
+    Enables A/B comparison of voice-tuned vs non-voice materials.
+
+    Attributes:
+        voice_applied_funnel: Funnel stages for materials with voice applied.
+        no_voice_funnel: Funnel stages for materials without voice applied.
+        voice_applied_reply_rate: replies/sends for voice_applied=True.
+        no_voice_reply_rate: replies/sends for voice_applied=False.
+        lift_percentage: (voice - no_voice) / no_voice × 100, or None if no_voice rate is 0.
+        is_statistically_significant: z-test at 90% confidence.
+        sample_size_voice: Total sends with voice applied.
+        sample_size_no_voice: Total sends without voice applied.
+    """
+
+    voice_applied_funnel: list[FunnelStage]
+    no_voice_funnel: list[FunnelStage]
+    voice_applied_reply_rate: float
+    no_voice_reply_rate: float
+    lift_percentage: float | None
+    is_statistically_significant: bool
+    sample_size_voice: int
+    sample_size_no_voice: int
+
+
 
 # ─── Input Data Structures ────────────────────────────────────────────────────
 # These represent pre-fetched records passed into the analytics service.
@@ -960,3 +987,83 @@ class AnalyticsService:
                 ))
 
         return results
+
+
+    def compute_voice_segmented_funnel(
+        self,
+        transitions_voice: list[StageTransition],
+        transitions_no_voice: list[StageTransition],
+        stage_order: list[str],
+        period_days: int,
+        voice_sends: int,
+        voice_replies: int,
+        no_voice_sends: int,
+        no_voice_replies: int,
+        reference_date: date | None = None,
+    ) -> VoiceSegmentedFunnel:
+        """Compute funnel metrics segmented by voice_applied tag.
+
+        Computes separate funnels for voice_applied=True and voice_applied=False
+        subsets, calculates reply rates, lift percentage, and statistical
+        significance via a z-test for two proportions.
+
+        Args:
+            transitions_voice: Stage transitions for voice_applied=True records.
+            transitions_no_voice: Stage transitions for voice_applied=False records.
+            stage_order: Ordered pipeline stages.
+            period_days: Reporting window (7, 30, 90).
+            voice_sends: Aggregate send count for voice=True.
+            voice_replies: Aggregate reply count for voice=True.
+            no_voice_sends: Aggregate send count for voice=False.
+            no_voice_replies: Aggregate reply count for voice=False.
+            reference_date: End of reporting window (defaults to today).
+
+        Returns:
+            VoiceSegmentedFunnel with both funnels, reply rates, lift, and
+            statistical significance indicator.
+        """
+        # Compute separate funnels for each segment
+        voice_funnel = self.compute_funnel(
+            transitions_voice, stage_order, period_days, reference_date
+        )
+        no_voice_funnel = self.compute_funnel(
+            transitions_no_voice, stage_order, period_days, reference_date
+        )
+
+        # Calculate reply rates
+        voice_rr = voice_replies / voice_sends if voice_sends > 0 else 0.0
+        no_voice_rr = (
+            no_voice_replies / no_voice_sends if no_voice_sends > 0 else 0.0
+        )
+
+        # Compute lift percentage
+        if no_voice_rr > 0:
+            lift = ((voice_rr - no_voice_rr) / no_voice_rr) * 100
+        else:
+            lift = None
+
+        # Statistical significance via z-test for two proportions
+        if (
+            voice_sends >= self.AB_MIN_SAMPLE
+            and no_voice_sends >= self.AB_MIN_SAMPLE
+        ):
+            p_value = _z_test_two_proportions(
+                successes_a=voice_replies,
+                trials_a=voice_sends,
+                successes_b=no_voice_replies,
+                trials_b=no_voice_sends,
+            )
+            is_significant = p_value < (1.0 - self.AB_CONFIDENCE)
+        else:
+            is_significant = False
+
+        return VoiceSegmentedFunnel(
+            voice_applied_funnel=voice_funnel,
+            no_voice_funnel=no_voice_funnel,
+            voice_applied_reply_rate=round(voice_rr, 4),
+            no_voice_reply_rate=round(no_voice_rr, 4),
+            lift_percentage=round(lift, 1) if lift is not None else None,
+            is_statistically_significant=is_significant,
+            sample_size_voice=voice_sends,
+            sample_size_no_voice=no_voice_sends,
+        )

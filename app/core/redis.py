@@ -15,11 +15,13 @@ from app.core.config import get_settings
 CHANNEL_PIPELINE_UPDATES = "pipeline_updates"
 CHANNEL_NOTIFICATIONS = "notifications"
 CHANNEL_SCORE_CHANGES = "score_changes"
+CHANNEL_GAP_UPDATES = "gap_updates"
 
 ALL_CHANNELS = [
     CHANNEL_PIPELINE_UPDATES,
     CHANNEL_NOTIFICATIONS,
     CHANNEL_SCORE_CHANGES,
+    CHANNEL_GAP_UPDATES,
 ]
 
 # Module-level connection pool (initialized on first use)

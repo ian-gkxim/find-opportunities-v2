@@ -625,6 +625,327 @@ class TestGenerateContent:
 # --- Evaluation Pending Tests ---
 
 
+# --- Critique / Revision Dispatch Tests ---
+
+
+class TestDispatchCritique:
+    """Test dispatch_critique returns parsed JSON on success and propagates errors."""
+
+    @pytest.fixture
+    def critique_provider(self):
+        """Provider that returns valid critique JSON."""
+        return FakeLLMProvider(
+            response=json.dumps({
+                "structured_edits": [],
+                "narrative_findings": {
+                    "missed_keywords": [],
+                    "company_angles": [],
+                    "reframing": [],
+                    "tone_style": [],
+                },
+            })
+        )
+
+    @pytest.fixture
+    def critique_router(self, fake_cache, critique_provider):
+        """Router configured with CRITIQUE evaluation type."""
+        configs = {
+            EvaluationType.CRITIQUE: LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model="claude-3-sonnet-20240229",
+                timeout=60,
+                max_retries=2,
+                retry_delay=0,
+            ),
+        }
+        providers = {LLMProvider.ANTHROPIC: critique_provider}
+        return LLMRouter(configs=configs, cache=fake_cache, providers=providers)
+
+    async def test_dispatch_critique_returns_parsed_json(
+        self, critique_router, critique_provider
+    ):
+        """dispatch_critique should parse LLM JSON response and return a dict."""
+        result = await critique_router.dispatch_critique("Review this material")
+        assert isinstance(result, dict)
+        assert "structured_edits" in result
+        assert "narrative_findings" in result
+        assert result["structured_edits"] == []
+        assert result["narrative_findings"]["missed_keywords"] == []
+
+    async def test_dispatch_critique_uses_critique_config(
+        self, critique_router, critique_provider
+    ):
+        """dispatch_critique should use the CRITIQUE config's model."""
+        await critique_router.dispatch_critique("Review this material")
+        assert critique_provider.call_count == 1
+        assert critique_provider.calls[0]["model"] == "claude-3-sonnet-20240229"
+
+    async def test_dispatch_critique_passes_timeout(
+        self, critique_router, critique_provider
+    ):
+        """dispatch_critique should pass the timeout to the provider."""
+        await critique_router.dispatch_critique("Review this", timeout=45.0)
+        assert critique_provider.calls[0]["timeout"] == 45
+
+    async def test_dispatch_critique_default_timeout_is_60(
+        self, critique_router, critique_provider
+    ):
+        """dispatch_critique default timeout should be 60 seconds."""
+        await critique_router.dispatch_critique("Review this")
+        assert critique_provider.calls[0]["timeout"] == 60
+
+    async def test_dispatch_critique_timeout_raises_api_timeout_error(self, fake_cache):
+        """dispatch_critique should propagate APITimeoutError from provider."""
+        provider = FakeLLMProvider(
+            error=APITimeoutError("Timed out", service="anthropic", timeout_seconds=60)
+        )
+        configs = {
+            EvaluationType.CRITIQUE: LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model="claude-3-sonnet-20240229",
+                timeout=60,
+                retry_delay=0,
+            ),
+        }
+        router = LLMRouter(
+            configs=configs,
+            cache=fake_cache,
+            providers={LLMProvider.ANTHROPIC: provider},
+        )
+        with pytest.raises(APITimeoutError):
+            await router.dispatch_critique("Review this material")
+
+    async def test_dispatch_critique_invalid_json_raises(self, fake_cache):
+        """dispatch_critique should raise json.JSONDecodeError on invalid JSON."""
+        provider = FakeLLMProvider(response="This is not valid JSON")
+        configs = {
+            EvaluationType.CRITIQUE: LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model="claude-3-sonnet-20240229",
+                timeout=60,
+                retry_delay=0,
+            ),
+        }
+        router = LLMRouter(
+            configs=configs,
+            cache=fake_cache,
+            providers={LLMProvider.ANTHROPIC: provider},
+        )
+        with pytest.raises(json.JSONDecodeError):
+            await router.dispatch_critique("Review this material")
+
+
+class TestDispatchRevision:
+    """Test dispatch_revision returns raw string on success and propagates errors."""
+
+    @pytest.fixture
+    def revision_provider(self):
+        """Provider that returns revised text."""
+        return FakeLLMProvider(response="This is the revised material text with improvements.")
+
+    @pytest.fixture
+    def revision_router(self, fake_cache, revision_provider):
+        """Router configured with REVISION evaluation type."""
+        configs = {
+            EvaluationType.REVISION: LLMConfig(
+                provider=LLMProvider.OPENAI,
+                model="gpt-4",
+                timeout=60,
+                max_retries=2,
+                retry_delay=0,
+            ),
+        }
+        providers = {LLMProvider.OPENAI: revision_provider}
+        return LLMRouter(configs=configs, cache=fake_cache, providers=providers)
+
+    async def test_dispatch_revision_returns_string(
+        self, revision_router, revision_provider
+    ):
+        """dispatch_revision should return the raw text string from the LLM."""
+        result = await revision_router.dispatch_revision("Revise this material")
+        assert isinstance(result, str)
+        assert result == "This is the revised material text with improvements."
+
+    async def test_dispatch_revision_uses_revision_config(
+        self, revision_router, revision_provider
+    ):
+        """dispatch_revision should use the REVISION config's model."""
+        await revision_router.dispatch_revision("Revise this material")
+        assert revision_provider.call_count == 1
+        assert revision_provider.calls[0]["model"] == "gpt-4"
+
+    async def test_dispatch_revision_passes_timeout(
+        self, revision_router, revision_provider
+    ):
+        """dispatch_revision should pass the timeout to the provider."""
+        await revision_router.dispatch_revision("Revise this", timeout=30.0)
+        assert revision_provider.calls[0]["timeout"] == 30
+
+    async def test_dispatch_revision_default_timeout_is_60(
+        self, revision_router, revision_provider
+    ):
+        """dispatch_revision default timeout should be 60 seconds."""
+        await revision_router.dispatch_revision("Revise this")
+        assert revision_provider.calls[0]["timeout"] == 60
+
+    async def test_dispatch_revision_timeout_raises_api_timeout_error(self, fake_cache):
+        """dispatch_revision should propagate APITimeoutError from provider."""
+        provider = FakeLLMProvider(
+            error=APITimeoutError("Timed out", service="openai", timeout_seconds=60)
+        )
+        configs = {
+            EvaluationType.REVISION: LLMConfig(
+                provider=LLMProvider.OPENAI,
+                model="gpt-4",
+                timeout=60,
+                retry_delay=0,
+            ),
+        }
+        router = LLMRouter(
+            configs=configs,
+            cache=fake_cache,
+            providers={LLMProvider.OPENAI: provider},
+        )
+        with pytest.raises(APITimeoutError):
+            await router.dispatch_revision("Revise this material")
+
+    async def test_dispatch_revision_does_not_parse_json(
+        self, fake_cache
+    ):
+        """dispatch_revision should return raw text even if it looks like JSON."""
+        json_like_response = '{"key": "value"}'
+        provider = FakeLLMProvider(response=json_like_response)
+        configs = {
+            EvaluationType.REVISION: LLMConfig(
+                provider=LLMProvider.OPENAI,
+                model="gpt-4",
+                timeout=60,
+                retry_delay=0,
+            ),
+        }
+        router = LLMRouter(
+            configs=configs,
+            cache=fake_cache,
+            providers={LLMProvider.OPENAI: provider},
+        )
+        result = await router.dispatch_revision("Revise this")
+        # Should return the raw string, not a parsed dict
+        assert isinstance(result, str)
+        assert result == json_like_response
+
+
+class TestDispatchExtraction:
+    """Test dispatch_extraction returns parsed JSON on success and propagates errors."""
+
+    @pytest.fixture
+    def extraction_provider(self):
+        """Provider that returns valid extraction JSON."""
+        return FakeLLMProvider(
+            response=json.dumps({
+                "claims": [
+                    {
+                        "claim_text": "10 years of Python experience",
+                        "category": "experience_duration",
+                        "source_span": "10 years of Python experience",
+                        "source_span_start": 0,
+                        "source_span_end": 30,
+                        "is_prospect_side": False,
+                    }
+                ]
+            })
+        )
+
+    @pytest.fixture
+    def extraction_router(self, fake_cache, extraction_provider):
+        """Router configured with EXTRACTION evaluation type."""
+        configs = {
+            EvaluationType.EXTRACTION: LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model="claude-3-sonnet-20240229",
+                timeout=60,
+                max_retries=2,
+                retry_delay=0,
+            ),
+        }
+        providers = {LLMProvider.ANTHROPIC: extraction_provider}
+        return LLMRouter(configs=configs, cache=fake_cache, providers=providers)
+
+    async def test_dispatch_extraction_returns_parsed_json(
+        self, extraction_router, extraction_provider
+    ):
+        """dispatch_extraction should parse LLM JSON response and return a dict."""
+        result = await extraction_router.dispatch_extraction("Extract claims from this")
+        assert isinstance(result, dict)
+        assert "claims" in result
+        assert len(result["claims"]) == 1
+        assert result["claims"][0]["claim_text"] == "10 years of Python experience"
+
+    async def test_dispatch_extraction_uses_extraction_config(
+        self, extraction_router, extraction_provider
+    ):
+        """dispatch_extraction should use the EXTRACTION config's model."""
+        await extraction_router.dispatch_extraction("Extract claims")
+        assert extraction_provider.call_count == 1
+        assert extraction_provider.calls[0]["model"] == "claude-3-sonnet-20240229"
+
+    async def test_dispatch_extraction_passes_timeout(
+        self, extraction_router, extraction_provider
+    ):
+        """dispatch_extraction should pass the timeout to the provider."""
+        await extraction_router.dispatch_extraction("Extract claims", timeout=45.0)
+        assert extraction_provider.calls[0]["timeout"] == 45
+
+    async def test_dispatch_extraction_default_timeout_is_60(
+        self, extraction_router, extraction_provider
+    ):
+        """dispatch_extraction default timeout should be 60 seconds."""
+        await extraction_router.dispatch_extraction("Extract claims")
+        assert extraction_provider.calls[0]["timeout"] == 60
+
+    async def test_dispatch_extraction_timeout_raises_api_timeout_error(self, fake_cache):
+        """dispatch_extraction should propagate APITimeoutError from provider."""
+        provider = FakeLLMProvider(
+            error=APITimeoutError("Timed out", service="anthropic", timeout_seconds=60)
+        )
+        configs = {
+            EvaluationType.EXTRACTION: LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model="claude-3-sonnet-20240229",
+                timeout=60,
+                retry_delay=0,
+            ),
+        }
+        router = LLMRouter(
+            configs=configs,
+            cache=fake_cache,
+            providers={LLMProvider.ANTHROPIC: provider},
+        )
+        with pytest.raises(APITimeoutError):
+            await router.dispatch_extraction("Extract claims from this")
+
+    async def test_dispatch_extraction_invalid_json_raises(self, fake_cache):
+        """dispatch_extraction should raise json.JSONDecodeError on invalid JSON."""
+        provider = FakeLLMProvider(response="This is not valid JSON")
+        configs = {
+            EvaluationType.EXTRACTION: LLMConfig(
+                provider=LLMProvider.ANTHROPIC,
+                model="claude-3-sonnet-20240229",
+                timeout=60,
+                retry_delay=0,
+            ),
+        }
+        router = LLMRouter(
+            configs=configs,
+            cache=fake_cache,
+            providers={LLMProvider.ANTHROPIC: provider},
+        )
+        with pytest.raises(json.JSONDecodeError):
+            await router.dispatch_extraction("Extract claims from this")
+
+
+# --- Evaluation Pending Tests ---
+
+
 class TestEvaluationPending:
     """Test that evaluation_pending is returned when appropriate."""
 

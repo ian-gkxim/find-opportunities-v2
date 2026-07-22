@@ -40,6 +40,9 @@ class EvaluationType(str, Enum):
     MATCHING = "matching"
     GENERATION = "generation"
     RESEARCH = "research"
+    CRITIQUE = "critique"      # Fresh-context review
+    REVISION = "revision"      # Narrative finding revision
+    EXTRACTION = "extraction"  # P2: claim extraction from materials
 
 
 class EvaluationStatus(str, Enum):
@@ -305,6 +308,87 @@ class LLMRouter:
             )
 
         return response
+
+    # --- Critique / Revision Dispatch ---
+
+    async def dispatch_critique(self, prompt: str, timeout: float = 60.0) -> dict:
+        """Dispatch a critique request using the CRITIQUE evaluation type config.
+
+        Returns raw JSON response parsed as dict for parsing by Review_Service.
+        Raises APITimeoutError after timeout.
+
+        Args:
+            prompt: The full critique prompt (fresh context only).
+            timeout: Request timeout in seconds (default 60).
+
+        Returns:
+            Parsed JSON dict from the LLM response.
+
+        Raises:
+            APITimeoutError: If the provider exceeds the timeout.
+            BaseServiceError: For other provider errors.
+            json.JSONDecodeError: If response is not valid JSON.
+        """
+        config = self._configs[EvaluationType.CRITIQUE]
+        provider_client = self._providers[config.provider]
+        response = await provider_client.complete(
+            prompt=prompt,
+            model=config.model,
+            timeout=int(timeout),
+        )
+        return json.loads(response)
+
+    async def dispatch_revision(self, prompt: str, timeout: float = 60.0) -> str:
+        """Dispatch a targeted revision request using REVISION config.
+
+        Returns revised material text as string.
+        Raises APITimeoutError after timeout.
+
+        Args:
+            prompt: The revision prompt with material text and narrative findings.
+            timeout: Request timeout in seconds (default 60).
+
+        Returns:
+            Revised material text string from the LLM.
+
+        Raises:
+            APITimeoutError: If the provider exceeds the timeout.
+            BaseServiceError: For other provider errors.
+        """
+        config = self._configs[EvaluationType.REVISION]
+        provider_client = self._providers[config.provider]
+        return await provider_client.complete(
+            prompt=prompt,
+            model=config.model,
+            timeout=int(timeout),
+        )
+
+    async def dispatch_extraction(self, prompt: str, timeout: float = 60.0) -> dict:
+        """Dispatch a claim extraction request using EXTRACTION evaluation type.
+
+        Returns raw JSON response containing extracted claims array.
+        Raises APITimeoutError after timeout.
+
+        Args:
+            prompt: The full extraction prompt with material text.
+            timeout: Request timeout in seconds (default 60).
+
+        Returns:
+            Parsed JSON dict from the LLM response (containing claims array).
+
+        Raises:
+            APITimeoutError: If the provider exceeds the timeout.
+            BaseServiceError: For other provider errors.
+            json.JSONDecodeError: If response is not valid JSON.
+        """
+        config = self._configs[EvaluationType.EXTRACTION]
+        provider_client = self._providers[config.provider]
+        response = await provider_client.complete(
+            prompt=prompt,
+            model=config.model,
+            timeout=int(timeout),
+        )
+        return json.loads(response)
 
     # --- Cache Methods ---
 

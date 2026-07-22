@@ -24,6 +24,7 @@ from app.core.analytics_service import (
     SequenceResponse,
     StageTransition,
     VariantData,
+    VoiceSegmentedFunnel,
     _z_test_two_proportions,
 )
 
@@ -608,3 +609,147 @@ class TestZTest:
     def test_all_successes(self):
         """All successes in both groups (pooled = 1.0) returns 1.0."""
         assert _z_test_two_proportions(100, 100, 100, 100) == 1.0
+
+
+# ─── Voice Segmented Funnel ───────────────────────────────────────────────────
+
+
+class TestVoiceSegmentedFunnel:
+    """Unit tests for compute_voice_segmented_funnel().
+
+    Requirements: 4.2
+    """
+
+    def _make_transitions(self, count: int, stage: str) -> list[StageTransition]:
+        """Helper to create simple stage transitions."""
+        return [
+            StageTransition(
+                record_id=f"r{i}",
+                stage_name=stage,
+                entered_at=datetime(2024, 6, 1, 10, 0),
+                exited_at=datetime(2024, 6, 2, 10, 0),
+                exited_to_next=True,
+            )
+            for i in range(count)
+        ]
+
+    def test_lift_calculation_known_values(self, service: AnalyticsService):
+        """Known values produce expected reply rates and lift.
+
+        voice_sends=100, voice_replies=30, no_voice_sends=100, no_voice_replies=20
+        → voice_rr=0.3, no_voice_rr=0.2, lift=50.0%
+        """
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=self._make_transitions(5, "Sent"),
+            transitions_no_voice=self._make_transitions(5, "Sent"),
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=100,
+            voice_replies=30,
+            no_voice_sends=100,
+            no_voice_replies=20,
+        )
+
+        assert result.voice_applied_reply_rate == 0.3
+        assert result.no_voice_reply_rate == 0.2
+        assert result.lift_percentage == 50.0
+        assert result.sample_size_voice == 100
+        assert result.sample_size_no_voice == 100
+
+    def test_statistically_significant_large_sample(self, service: AnalyticsService):
+        """Large sample with different rates is statistically significant.
+
+        With 1000 sends each and very different reply rates (40% vs 20%),
+        the z-test should detect significance at 90% confidence.
+        """
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=self._make_transitions(5, "Sent"),
+            transitions_no_voice=self._make_transitions(5, "Sent"),
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=1000,
+            voice_replies=400,
+            no_voice_sends=1000,
+            no_voice_replies=200,
+        )
+
+        assert result.is_statistically_significant is True
+
+    def test_not_significant_small_sample(self, service: AnalyticsService):
+        """Small sample below AB_MIN_SAMPLE is not statistically significant.
+
+        AB_MIN_SAMPLE is 20, so samples of 10 should skip z-test.
+        """
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=self._make_transitions(5, "Sent"),
+            transitions_no_voice=self._make_transitions(5, "Sent"),
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=10,
+            voice_replies=5,
+            no_voice_sends=10,
+            no_voice_replies=2,
+        )
+
+        assert result.is_statistically_significant is False
+
+    def test_zero_voice_sends_gives_zero_rate(self, service: AnalyticsService):
+        """Zero voice sends results in voice_applied_reply_rate=0.0."""
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=[],
+            transitions_no_voice=self._make_transitions(5, "Sent"),
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=0,
+            voice_replies=0,
+            no_voice_sends=100,
+            no_voice_replies=20,
+        )
+
+        assert result.voice_applied_reply_rate == 0.0
+
+    def test_zero_no_voice_sends_gives_zero_rate(self, service: AnalyticsService):
+        """Zero no-voice sends results in no_voice_reply_rate=0.0."""
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=self._make_transitions(5, "Sent"),
+            transitions_no_voice=[],
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=100,
+            voice_replies=30,
+            no_voice_sends=0,
+            no_voice_replies=0,
+        )
+
+        assert result.no_voice_reply_rate == 0.0
+
+    def test_equal_rates_lift_zero(self, service: AnalyticsService):
+        """Equal reply rates produce lift=0.0."""
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=self._make_transitions(5, "Sent"),
+            transitions_no_voice=self._make_transitions(5, "Sent"),
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=100,
+            voice_replies=25,
+            no_voice_sends=100,
+            no_voice_replies=25,
+        )
+
+        assert result.lift_percentage == 0.0
+
+    def test_no_voice_rate_zero_lift_none(self, service: AnalyticsService):
+        """When no_voice reply rate is zero, lift is None (division by zero)."""
+        result = service.compute_voice_segmented_funnel(
+            transitions_voice=self._make_transitions(5, "Sent"),
+            transitions_no_voice=self._make_transitions(5, "Sent"),
+            stage_order=["Sent"],
+            period_days=30,
+            voice_sends=100,
+            voice_replies=30,
+            no_voice_sends=100,
+            no_voice_replies=0,
+        )
+
+        assert result.lift_percentage is None
+        assert result.no_voice_reply_rate == 0.0

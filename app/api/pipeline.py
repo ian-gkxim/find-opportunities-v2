@@ -1,9 +1,10 @@
 """API routes for pipeline management.
 
-Requirements 8.2, 8.3:
+Requirements 8.2, 8.3, 3.4:
 - GET /pipeline — list pipeline records with status/beneficiary filtering
 - PATCH /pipeline/{id}/status — manually update pipeline status
 - GET /pipeline/requires-action — get requires action items
+- GET /pipeline/{id} — pipeline record detail with review status
 """
 
 from datetime import datetime
@@ -11,6 +12,8 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query
 from pydantic import BaseModel, Field
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession
 
 router = APIRouter(tags=["pipeline"])
 
@@ -80,6 +83,93 @@ class RequiresActionResponse(BaseModel):
     total: int
 
 
+class InterviewPrepSummaryResponse(BaseModel):
+    """Summary of interview prep pack for pipeline record detail view.
+
+    Includes pack status, content, and action URLs for the Dashboard
+    to present the pack and offer regeneration.
+
+    Requirements: 3.2
+    """
+
+    pack_id: str
+    status: str
+    likely_questions: list[str]
+    star_talking_points_count: int
+    company_briefing: str
+    questions_to_ask: list[str]
+    has_grounding_flags: bool
+    generation_duration_ms: int
+    detail_url: str
+    regenerate_url: str
+
+
+class PipelineRecordDetail(BaseModel):
+    """Detail view of a pipeline record including review status and grounding badge."""
+
+    id: UUID
+    prospect_id: UUID
+    company_name: str | None = None
+    opportunity_type_id: str
+    beneficiary_id: str
+    current_status: str
+    previous_status: str | None = None
+    is_terminal: bool = False
+    created_at: datetime
+    updated_at: datetime
+    review_status: str | None = None
+    edits_applied_count: int | None = None
+    grounding_warning_badge: bool = Field(
+        default=False,
+        description=(
+            "True when material has partially_grounded claims but no "
+            "ungrounded claims — pipeline can advance with warning. "
+            "Requirements: 3.4"
+        ),
+    )
+    interview_prep: InterviewPrepSummaryResponse | None = Field(
+        default=None,
+        description=(
+            "Interview prep pack summary when a pack exists for this record. "
+            "Includes pack status, content, and regenerate action URL. "
+            "Requirements: 3.2"
+        ),
+    )
+
+
+# --- Helpers ---
+
+
+async def _get_review_status_for_record(
+    session: AsyncSession, pipeline_record_id: str
+) -> dict[str, str | int | None]:
+    """Query review_reasoning_logs for a pipeline record's review data.
+
+    Returns a dict with review_status and edits_applied_count, or
+    None values if no review data exists for this record.
+    """
+    stmt = text("""
+        SELECT rrl.final_review_status,
+               COALESCE(SUM(rcd.edits_applied), 0) as total_edits_applied
+        FROM review_reasoning_logs rrl
+        LEFT JOIN review_cycle_details rcd ON rcd.reasoning_log_id = rrl.id
+        WHERE rrl.pipeline_record_id = :pipeline_record_id
+        GROUP BY rrl.id, rrl.final_review_status
+        ORDER BY rrl.created_at DESC
+        LIMIT 1
+    """)
+    result = await session.execute(stmt, {"pipeline_record_id": pipeline_record_id})
+    row = result.fetchone()
+
+    if row is None:
+        return {"review_status": None, "edits_applied_count": None}
+
+    return {
+        "review_status": row[0],
+        "edits_applied_count": int(row[1]),
+    }
+
+
 # --- Routes ---
 
 
@@ -139,3 +229,74 @@ async def get_requires_action() -> RequiresActionResponse:
         items=[],
         total=0,
     )
+
+
+@router.get("/pipeline/{record_id}", response_model=PipelineRecordDetail)
+async def get_pipeline_record_detail(record_id: UUID) -> PipelineRecordDetail:
+    """Get detailed view of a single pipeline record, including review status.
+
+    Queries review_reasoning_logs for the record's review data and includes
+    review_status and edits_applied_count in the response.
+    Calls PipelineGateService.get_warning_badge() to determine if a warning
+    badge should display (partially_grounded_count > 0, ungrounded_count == 0).
+    Includes interview_prep pack summary when a pack exists for this record.
+
+    Requirements: 3.2, 3.4
+    """
+    try:
+        from app.api.interview_prep_enrichment import get_interview_prep_summary
+        from app.core.pipeline_gate import PipelineGateService
+        from app.models.base import get_async_engine, get_async_session_factory
+        from app.repositories.grounding_repository import GroundingRepository
+
+        engine = get_async_engine()
+        session_factory = get_async_session_factory(engine)
+
+        async with session_factory() as session:
+            review_data = await _get_review_status_for_record(session, str(record_id))
+
+        # Check grounding warning badge via PipelineGateService
+        grounding_warning_badge = False
+        try:
+            db_repo = GroundingRepository(session_factory)
+            gate_service = PipelineGateService(db_repo)
+            grounding_warning_badge = await gate_service.get_warning_badge(str(record_id))
+        except Exception:
+            # If grounding tables don't exist yet, skip gracefully
+            pass
+
+        # Fetch interview prep pack summary if one exists
+        interview_prep = await get_interview_prep_summary(str(record_id))
+
+        await engine.dispose()
+
+        # Stub: In production, also fetches the pipeline record itself from DB
+        return PipelineRecordDetail(
+            id=record_id,
+            prospect_id=record_id,  # placeholder
+            opportunity_type_id="unknown",
+            beneficiary_id="unknown",
+            current_status="Unknown",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            review_status=review_data["review_status"],
+            edits_applied_count=review_data["edits_applied_count"],
+            grounding_warning_badge=grounding_warning_badge,
+            interview_prep=interview_prep,
+        )
+
+    except Exception:
+        # If DB isn't available, return record without review data
+        return PipelineRecordDetail(
+            id=record_id,
+            prospect_id=record_id,  # placeholder
+            opportunity_type_id="unknown",
+            beneficiary_id="unknown",
+            current_status="Unknown",
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            review_status=None,
+            edits_applied_count=None,
+            grounding_warning_badge=False,
+            interview_prep=None,
+        )

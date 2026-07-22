@@ -15,6 +15,7 @@ from app.core.errors import SchemaValidationError
 from app.core.schema_registry import (
     Beneficiary,
     OpportunityType,
+    PrepareTechnique,
     SchemaRegistry,
     Stage,
     Technique,
@@ -56,7 +57,7 @@ class TestSchemaLoading:
         assert all(isinstance(b, Beneficiary) for b in registry.beneficiaries)
         assert all(isinstance(ot, OpportunityType) for ot in registry.opportunity_types)
         assert all(isinstance(t, Technique) for t in registry.find_techniques)
-        assert all(isinstance(t, Technique) for t in registry.prepare_techniques)
+        assert all(isinstance(t, PrepareTechnique) for t in registry.prepare_techniques)
         assert all(isinstance(t, Technique) for t in registry.outreach_techniques)
 
 

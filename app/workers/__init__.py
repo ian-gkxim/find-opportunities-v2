@@ -9,6 +9,11 @@ Workers:
 - discovery_worker: Scheduled discovery runs (hourly/daily per source)
 - analytics_worker: Daily funnel computation and metrics (02:00 UTC cron)
 - scoring_worker: Score recomputation on weight changes or enrichment updates
+- review_worker: Review processing for pending draft materials
+- grounding_worker: Grounding verification batch processing and analytics (03:00 UTC cron)
+- gap_worker: Capability gap analysis cycle (02:30 UTC cron)
+- outreach_worker: Outbound validation gate + Lemlist enrollment
+- profile_enrichment_worker: Profile enrichment scanning (daily 02:00 UTC cron)
 """
 
 from arq.connections import RedisSettings
@@ -76,6 +81,12 @@ from app.workers.enrichment_worker import (
 )
 from app.workers.analytics_worker import run_analytics_daily
 from app.workers.scoring_worker import run_score_recomputation
+from app.workers.review_worker import run_review_processing
+from app.workers.grounding_worker import run_grounding_analytics, run_grounding_processing
+from app.workers.gap_worker import run_gap_analysis_cycle
+from app.workers.outreach_worker import run_outreach_send
+from app.workers.profile_enrichment_worker import profile_enrichment_scan
+from app.workers.interview_prep_worker import process_interview_prep, regenerate_interview_prep
 
 
 async def startup(ctx: dict) -> None:
@@ -107,6 +118,14 @@ class WorkerSettings:
         run_discovery_cycle,
         run_analytics_daily,
         run_score_recomputation,
+        run_review_processing,
+        run_grounding_processing,
+        run_grounding_analytics,
+        run_gap_analysis_cycle,
+        run_outreach_send,
+        profile_enrichment_scan,
+        process_interview_prep,
+        regenerate_interview_prep,
     ]
 
     # Cron jobs for scheduled tasks
@@ -136,6 +155,30 @@ class WorkerSettings:
             cron(
                 run_discovery_cycle,
                 minute=30,
+                unique=True,
+            ),
+            # Grounding analytics: daily at 03:00 UTC (Requirement 4.2)
+            cron(
+                run_grounding_analytics,
+                hour=3,
+                minute=0,
+                unique=True,
+            ),
+            # Gap analysis: daily at 02:30 UTC (after analytics at 02:00)
+            # Requirement 1.1, 1.3
+            cron(
+                run_gap_analysis_cycle,
+                hour=2,
+                minute=30,
+                unique=True,
+            ),
+            # Profile enrichment: daily at 04:00 UTC
+            # Scans configured public sources for new competency evidence
+            # Requirement 1.2 (internal-profile-enrichment)
+            cron(
+                profile_enrichment_scan,
+                hour=4,
+                minute=0,
                 unique=True,
             ),
         ]

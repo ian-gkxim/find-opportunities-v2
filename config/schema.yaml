@@ -46,6 +46,8 @@ beneficiaries:
       - resume
       - cover_letter
       - instructions
+      - writing_style
+      - behavioral_profile
     offerings_asset: consultant_profiles
     offerings_label: "Offerings"
     search_criteria_asset: company_search_criteria
@@ -56,6 +58,7 @@ beneficiaries:
     baseline_assets:
       - company_profile
       - capability_statement
+      - brand_voice
     offerings_asset: company_documents
     offerings_label: "Offerings"
     search_criteria_asset: project_search_criteria
@@ -81,6 +84,8 @@ opportunity_types:
       - Offer
       - Accepted
       - Rejected
+    state_entry_techniques:
+      - interview_preparation
 
   - id: company
     label: "Companies"
@@ -99,6 +104,8 @@ opportunity_types:
       - Offer
       - Accepted
       - Rejected
+    state_entry_techniques:
+      - interview_preparation
 
   - id: cold_outreach_consultant
     label: "Cold Outreach (Consultant)"
@@ -176,6 +183,8 @@ prepare_techniques:
   - id: cv_and_cover_letter
     service_class: CVGeneratorService
     description: "Generates tailored CV and cover letter via LLM using enrichment data"
+    review_technique: standard_material_review
+    grounding_technique: standard_grounding
     inputs:
       - resume
       - cover_letter
@@ -189,6 +198,8 @@ prepare_techniques:
   - id: cold_email_composition
     service_class: ColdEmailComposerService
     description: "Drafts personalized cold emails using Apollo enrichment and hooks"
+    review_technique: email_review
+    grounding_technique: standard_grounding
     inputs:
       - cold_email_instructions
       - consultant_profiles
@@ -199,6 +210,8 @@ prepare_techniques:
   - id: proposal_composition
     service_class: ProposalCompositionService
     description: "Generates project proposals from company profile, case studies, and enrichment"
+    review_technique: standard_material_review
+    grounding_technique: standard_grounding
     inputs:
       - company_profile
       - company_documents
@@ -206,6 +219,22 @@ prepare_techniques:
     outputs:
       - proposal_document
       - executive_summary
+
+  - id: interview_preparation
+    service_class: InterviewPrepService
+    description: "Generates interview prep pack on Interview state entry"
+    trigger: state_entry
+    trigger_state: Interview
+    grounding_technique: standard_grounding
+    inputs:
+      - opportunity_description
+      - tailored_cv
+      - tailored_cover_letter
+      - enrichment_record
+      - consultant_profiles
+      - star_examples
+    outputs:
+      - interview_prep_pack
 
 
 # ─── OUTREACH TECHNIQUES ─────────────────────────────────────────────────────
@@ -218,7 +247,69 @@ outreach_techniques:
   - id: lemlist_sequence
     service_class: LemlistSequenceService
     description: "Multi-channel automated outreach via Lemlist with A/B testing"
+    validation_rules:
+      - rule_id: unreplaced_tokens
+      - rule_id: empty_subject
+      - rule_id: missing_signature
+        params:
+          required: true
+      - rule_id: recipient_name_mismatch
+      - rule_id: empty_personalization_field
+        params:
+          required_fields: ["first_name", "company_name", "hook"]
+      - rule_id: length_bounds
+        severity: warning
+        params:
+          min_length: 100
+          max_length: 3000
+      - rule_id: malformed_url
+      - rule_id: link_liveness
+        params:
+          enabled: true
+      - rule_id: duplicate_content
 
   - id: tender_submission
     service_class: TenderSubmissionService
     description: "Formal tender or expression of interest submission process"
+
+
+# ─── REVIEW TECHNIQUES ────────────────────────────────────────────────────────
+
+review_techniques:
+  - id: standard_material_review
+    service_class: ReviewService
+    description: "Fresh-context LLM critique of CV, cover letter, and proposal materials"
+    critique_categories:
+      - missed_keywords
+      - company_angles
+      - reframing
+      - tone_style
+    max_review_cycles: 2
+
+  - id: email_review
+    service_class: ReviewService
+    description: "Focused critique for cold email drafts — brevity and hook emphasis"
+    critique_categories:
+      - missed_keywords
+      - company_angles
+      - reframing
+      - tone_style
+    max_review_cycles: 1
+
+
+# ─── GROUNDING TECHNIQUES ─────────────────────────────────────────────────────
+
+grounding_techniques:
+  - id: standard_grounding
+    service_class: GroundingVerifier
+    description: "Extract and verify factual claims against profile assets"
+    claim_categories:
+      - skill_technology
+      - achievement_outcome
+      - quantified_metric
+      - credential_certification
+      - named_client_employer
+      - experience_duration
+    extraction_timeout_seconds: 60
+    verification_timeout_seconds: 30
+    max_retries: 2

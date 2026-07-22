@@ -4,6 +4,7 @@ Runs scheduled tasks:
 - run_enrichment_cycle: Refresh stale enrichment records (every hour)
 - run_polling_cycle: Poll Lemlist for response events (every 5 minutes)
 - run_discovery_cycle: Execute discovery runs for all active sources (every hour)
+- profile_enrichment_scan: Profile enrichment scanning (daily at 04:00 UTC)
 
 Usage:
     python -m app.worker
@@ -23,6 +24,7 @@ from app.workers.enrichment_worker import (
     run_enrichment_cycle,
     run_polling_cycle,
 )
+from app.workers.profile_enrichment_worker import profile_enrichment_scan
 
 logging.basicConfig(
     level=logging.INFO,
@@ -54,6 +56,7 @@ class WorkerSettings:
         run_enrichment_cycle,
         run_polling_cycle,
         run_discovery_cycle,
+        profile_enrichment_scan,
     ]
 
     cron_jobs = [
@@ -63,6 +66,8 @@ class WorkerSettings:
         cron(run_enrichment_cycle, minute={0}),
         # Run discovery cycle every hour at minute 30
         cron(run_discovery_cycle, minute={30}),
+        # Profile enrichment: daily at 04:00 UTC
+        cron(profile_enrichment_scan, hour=4, minute=0, unique=True),
     ]
 
     on_startup = startup

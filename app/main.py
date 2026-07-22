@@ -74,8 +74,12 @@ def _register_routers(app: FastAPI) -> None:
     from app.api.analytics import router as analytics_router
     from app.api.dashboard import router as dashboard_router
     from app.api.discovery import router as discovery_router
+    from app.api.gap_routes import router as gap_router
+    from app.api.grounding import router as grounding_router
+    from app.api.interview_prep import router as interview_prep_router
     from app.api.personalization import router as personalization_router
     from app.api.pipeline import router as pipeline_router
+    from app.api.profile_enrichment import router as profile_enrichment_router
     from app.api.scoring import router as scoring_router
     from app.api.sequences import router as sequences_router
     from app.api.settings import router as settings_router
@@ -88,6 +92,10 @@ def _register_routers(app: FastAPI) -> None:
     app.include_router(sequences_router, prefix="/api")
     app.include_router(personalization_router, prefix="/api")
     app.include_router(analytics_router, prefix="/api")
+    app.include_router(grounding_router, prefix="/api")
+    app.include_router(interview_prep_router, prefix="/api")
+    app.include_router(gap_router, prefix="/api")
+    app.include_router(profile_enrichment_router, prefix="/api")
     app.include_router(settings_router, prefix="/api")
     app.include_router(websocket_router, prefix="/api")
 

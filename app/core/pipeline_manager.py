@@ -7,12 +7,21 @@ Requirements 13.5: Team pipeline state machine (Drafted → Sent → Replied →
 Requirements 13.6: Keyword detection advances Team pipeline from "Replied" to "Proposal Requested".
 """
 
+from __future__ import annotations
+
 import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from enum import Enum
-from typing import Any, Protocol
+from typing import TYPE_CHECKING, Any, Protocol
+
+if TYPE_CHECKING:
+    from arq.connections import ArqRedis
+
+    from app.core.outbound_validator import RuleResult
+    from app.core.pipeline_gate import PipelineGateService
+    from app.core.schema_registry import SchemaRegistry
 
 logger = logging.getLogger(__name__)
 
@@ -91,6 +100,7 @@ class PipelineTransitionResult(str, Enum):
     NO_CHANGE = "no_change"
     INVALID_STATE = "invalid_state"
     ALREADY_TERMINAL = "already_terminal"
+    GROUNDING_BLOCKED = "grounding_blocked"
 
 
 class RequiresActionType(str, Enum):
@@ -99,6 +109,8 @@ class RequiresActionType(str, Enum):
     STALE_FOLLOWUP = "stale_followup"
     FAILED_SEQUENCE = "failed_sequence"
     ENRICHMENT_ERROR = "enrichment_error"
+    VALIDATION_FAILED = "validation_failed"
+    INTERVIEW_PREP_FAILED = "interview_prep_failed"
 
 
 # --- Data Models ---
@@ -113,6 +125,7 @@ class PipelineTransition:
     previous_status: str | None = None
     new_status: str | None = None
     reason: str = ""
+    ungrounded_claims: list | None = None
 
 
 @dataclass
@@ -208,15 +221,27 @@ class PipelineManager:
         self,
         repository: PipelineRepository | None = None,
         publisher: EventPublisher | None = None,
+        gate_service: PipelineGateService | None = None,
+        schema_registry: SchemaRegistry | None = None,
+        redis_pool: ArqRedis | None = None,
+        interview_prep_repo=None,  # InterviewPrepRepository
     ):
         """Initialize the pipeline manager.
 
         Args:
             repository: Database repository for pipeline record access.
             publisher: Event publisher for WebSocket broadcasts via Redis.
+            gate_service: Pipeline gate service for grounding verification checks.
+            schema_registry: Schema registry for state-entry technique lookup.
+            redis_pool: ARQ Redis pool for enqueueing background jobs.
+            interview_prep_repo: Interview prep repository for failed pack queries.
         """
         self._repo = repository
         self._publisher = publisher
+        self._gate_service = gate_service
+        self._schema = schema_registry
+        self._redis_pool = redis_pool
+        self._interview_prep_repo = interview_prep_repo
 
     # --- Reply Detection ---
 
@@ -481,6 +506,21 @@ class PipelineManager:
                 )
             )
 
+        # 4. Failed interview prep packs
+        if self._interview_prep_repo:
+            failed_packs = await self._interview_prep_repo.get_failed_packs(limit=20)
+            for pack in failed_packs:
+                items.append(
+                    RequiresActionItem(
+                        action_type=RequiresActionType.INTERVIEW_PREP_FAILED,
+                        record_id=pack.pipeline_record_id,
+                        prospect_id="",  # Not directly available on pack
+                        beneficiary_id=pack.beneficiary_id,
+                        description="Interview prep pack generation failed for pipeline record",
+                        last_activity_at=pack.updated_at,
+                    )
+                )
+
         # Sort by staleness (most urgent first), then by last activity
         items.sort(
             key=lambda x: (
@@ -490,6 +530,90 @@ class PipelineManager:
         )
 
         return items
+
+    # --- Manual Transitions ---
+
+    async def transition_to(
+        self, record_id: str, new_status: str
+    ) -> PipelineTransition:
+        """Manually transition a pipeline record to a new status.
+
+        Enforces grounding verification gate for gated states (Approve,
+        Applied, Sent, Proposal Submitted). If ungrounded claims exist,
+        the transition is blocked and the ungrounded claims list is returned.
+
+        Requirements: 3.1 (Claim Grounding Verification)
+
+        Args:
+            record_id: The pipeline record ID.
+            new_status: The target status to transition to.
+
+        Returns:
+            PipelineTransition with the result of the operation.
+        """
+        record = await self._get_record(record_id)
+        if record is None:
+            return PipelineTransition(
+                result=PipelineTransitionResult.INVALID_STATE,
+                record_id=record_id,
+                reason="Pipeline record not found",
+            )
+
+        if record.is_terminal:
+            return PipelineTransition(
+                result=PipelineTransitionResult.ALREADY_TERMINAL,
+                record_id=record_id,
+                previous_status=record.current_status,
+                reason="Record is in a terminal state",
+            )
+
+        return await self._transition(record, new_status)
+
+    # --- Validation Failed Transition ---
+
+    async def transition_to_validation_failed(
+        self,
+        record_id: str,
+        blocking_failures: list[RuleResult],
+    ) -> PipelineTransition:
+        """Transition a pipeline record to validation_failed state.
+
+        Broadcasts the failure to the Dashboard "Requires Action" section
+        with the offending text spans from each blocking rule.
+
+        Requirement 1.2: Blocking validation failures prevent submission and
+        surface failed rules with offending text spans in Dashboard.
+
+        Args:
+            record_id: The pipeline record ID.
+            blocking_failures: List of RuleResult objects for blocking failures.
+
+        Returns:
+            PipelineTransition with the result of the operation.
+        """
+        record = await self._get_record(record_id)
+        if record is None:
+            logger.error(
+                "Cannot transition to validation_failed: "
+                "pipeline record %s not found",
+                record_id,
+            )
+            return PipelineTransition(
+                result=PipelineTransitionResult.INVALID_STATE,
+                record_id=record_id,
+                reason="Pipeline record not found",
+            )
+
+        transition = await self._transition(record, "validation_failed")
+
+        # Broadcast detailed failure info for Dashboard
+        await self._broadcast_validation_failure(
+            record_id=record_id,
+            blocking_failures=blocking_failures,
+            beneficiary_id=record.beneficiary_id,
+        )
+
+        return transition
 
     # --- Internal Helpers ---
 
@@ -504,13 +628,42 @@ class PipelineManager:
     ) -> PipelineTransition:
         """Execute a state transition and broadcast the change.
 
+        Before advancing to a gated state (Approve, Applied, Sent, Proposal Submitted),
+        checks the grounding gate. If ungrounded claims exist, the transition is blocked.
+
         Args:
             record: The current pipeline record data.
             new_status: The target status to transition to.
 
         Returns:
-            PipelineTransition with ADVANCED result.
+            PipelineTransition with ADVANCED result, or GROUNDING_BLOCKED if gate rejects.
         """
+        # Check grounding gate before allowing transition to gated states
+        if self._gate_service is not None:
+            allowed, ungrounded_claims = await self._gate_service.can_transition(
+                record.id, new_status
+            )
+            if not allowed:
+                logger.info(
+                    "Pipeline record %s blocked from transitioning to '%s': "
+                    "%d ungrounded claim(s)",
+                    record.id,
+                    new_status,
+                    len(ungrounded_claims) if ungrounded_claims else 0,
+                )
+                return PipelineTransition(
+                    result=PipelineTransitionResult.GROUNDING_BLOCKED,
+                    record_id=record.id,
+                    previous_status=record.current_status,
+                    new_status=new_status,
+                    reason=(
+                        f"Transition to '{new_status}' blocked by grounding "
+                        f"verification: {len(ungrounded_claims) if ungrounded_claims else 0} "
+                        f"ungrounded claim(s) must be resolved"
+                    ),
+                    ungrounded_claims=ungrounded_claims,
+                )
+
         previous_status = record.current_status
         is_terminal = new_status in TERMINAL_STATES
 
@@ -539,6 +692,9 @@ class PipelineManager:
             new_status,
         )
 
+        # Dispatch state-entry techniques (non-blocking)
+        await self._dispatch_state_entry_techniques(record, new_status)
+
         return PipelineTransition(
             result=PipelineTransitionResult.ADVANCED,
             record_id=record.id,
@@ -546,6 +702,61 @@ class PipelineManager:
             new_status=new_status,
             reason=f"Advanced from '{previous_status}' to '{new_status}'",
         )
+
+    async def _dispatch_state_entry_techniques(
+        self,
+        record: PipelineRecordData,
+        new_status: str,
+    ) -> None:
+        """Dispatch techniques configured for state entry.
+
+        Queries Schema_Registry for any prepare techniques triggered
+        on entry to `new_status` for this opportunity type.
+        Enqueues ARQ jobs for each matching technique.
+
+        This is non-blocking: jobs are enqueued and the method returns
+        immediately without awaiting generation results.
+
+        Requirements: 1.1, 3.1
+        """
+        if not self._schema:
+            return
+
+        techniques = self._schema.get_state_entry_techniques(
+            opportunity_type_id=record.opportunity_type_id,
+            state=new_status,
+        )
+
+        if not techniques:
+            return
+
+        for technique in techniques:
+            try:
+                if self._redis_pool:
+                    await self._redis_pool.enqueue_job(
+                        "process_interview_prep",
+                        record.id,
+                    )
+                    logger.info(
+                        "Enqueued state-entry technique '%s' for record %s (state=%s)",
+                        technique.id,
+                        record.id,
+                        new_status,
+                    )
+                else:
+                    logger.warning(
+                        "Cannot enqueue state-entry technique '%s' for record %s: "
+                        "no redis_pool configured",
+                        technique.id,
+                        record.id,
+                    )
+            except Exception as e:
+                logger.error(
+                    "Failed to enqueue state-entry technique '%s' for record %s: %s",
+                    technique.id,
+                    record.id,
+                    e,
+                )
 
     async def _broadcast_pipeline_update(
         self,
@@ -579,6 +790,69 @@ class PipelineManager:
         except Exception as e:
             logger.error(
                 "Failed to broadcast pipeline update for record %s: %s",
+                record_id,
+                str(e),
+            )
+
+    async def _broadcast_validation_failure(
+        self,
+        record_id: str,
+        blocking_failures: list[RuleResult],
+        beneficiary_id: str,
+    ) -> None:
+        """Broadcast validation failure details via Redis pub/sub.
+
+        Sends detailed failure info (including offending text spans) to the
+        Dashboard "Requires Action" section via WebSocket.
+
+        Requirement 1.2: Surface each failed rule with offending text span
+        in the Dashboard "Requires Action" section.
+
+        Args:
+            record_id: The pipeline record ID that failed validation.
+            blocking_failures: List of RuleResult for each blocking failure.
+            beneficiary_id: The beneficiary who owns this pipeline record.
+        """
+        if self._publisher is None:
+            return
+
+        # Serialize blocking failures with offending spans
+        failures_payload = [
+            {
+                "rule_id": failure.rule_id,
+                "message": failure.message,
+                "severity": failure.severity.value
+                if hasattr(failure.severity, "value")
+                else str(failure.severity),
+                "offending_spans": [
+                    {
+                        "start": span.start,
+                        "end": span.end,
+                        "field_name": span.field_name,
+                        "text": span.text,
+                    }
+                    for span in failure.offending_spans
+                ],
+            }
+            for failure in blocking_failures
+        ]
+
+        message = json.dumps({
+            "type": "validation_failed",
+            "action_type": RequiresActionType.VALIDATION_FAILED.value,
+            "record_id": record_id,
+            "beneficiary_id": beneficiary_id,
+            "blocking_failures": failures_payload,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        })
+
+        try:
+            await self._publisher.publish(
+                self.CHANNEL_NOTIFICATIONS, message
+            )
+        except Exception as e:
+            logger.error(
+                "Failed to broadcast validation failure for record %s: %s",
                 record_id,
                 str(e),
             )

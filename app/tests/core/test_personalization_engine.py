@@ -438,3 +438,235 @@ class TestGetAvailableFields:
         enrichment = EnrichmentData(industry="tech", company_size=50)
         fields = engine._get_available_fields(enrichment)
         assert set(fields) == {"industry", "company_size"}
+
+
+# ─── Regenerate Passages Tests ────────────────────────────────────────────────
+
+
+class FakeClaim:
+    """Minimal Claim-like object for testing regenerate_passages."""
+
+    def __init__(self, source_span: str, source_span_start: int, source_span_end: int, claim_text: str):
+        self.source_span = source_span
+        self.source_span_start = source_span_start
+        self.source_span_end = source_span_end
+        self.claim_text = claim_text
+
+
+class TestRegeneratePassages:
+    """Test regenerate_passages() method."""
+
+    @pytest.mark.asyncio
+    async def test_empty_excluded_claims_returns_original(self, engine):
+        """No excluded claims returns original text unchanged."""
+        original = "This is the original material text."
+        result = await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[],
+            beneficiary_context={},
+        )
+        assert result == original
+
+    @pytest.mark.asyncio
+    async def test_single_claim_replacement(self):
+        """A single ungrounded claim passage is replaced."""
+        original = "Hello world. I have 15 years of Java experience. Goodbye."
+        claim = FakeClaim(
+            source_span="I have 15 years of Java experience.",
+            source_span_start=13,
+            source_span_end=48,
+            claim_text="15 years of Java experience",
+        )
+
+        # LLM returns a JSON response with the replacement
+        llm_response = '[{"index": 1, "replacement_text": "I have extensive Java experience."}]'
+        fake_llm = FakeLLMRouter(response=llm_response)
+        engine = PersonalizationEngine(llm_router=fake_llm)
+
+        result = await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[claim],
+            beneficiary_context={"baseline_assets": {"resume": "Java developer for 8 years."}},
+        )
+        assert result == "Hello world. I have extensive Java experience. Goodbye."
+
+    @pytest.mark.asyncio
+    async def test_multiple_claims_replaced_in_order(self):
+        """Multiple ungrounded claims are all replaced correctly."""
+        original = "AAA BBB CCC DDD EEE"
+        claim1 = FakeClaim(
+            source_span="BBB",
+            source_span_start=4,
+            source_span_end=7,
+            claim_text="claim B",
+        )
+        claim2 = FakeClaim(
+            source_span="DDD",
+            source_span_start=12,
+            source_span_end=15,
+            claim_text="claim D",
+        )
+
+        llm_response = '[{"index": 1, "replacement_text": "XXX"}, {"index": 2, "replacement_text": "YYY"}]'
+        fake_llm = FakeLLMRouter(response=llm_response)
+        engine = PersonalizationEngine(llm_router=fake_llm)
+
+        result = await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[claim1, claim2],
+            beneficiary_context={},
+        )
+        assert result == "AAA XXX CCC YYY EEE"
+
+    @pytest.mark.asyncio
+    async def test_claims_sorted_by_position(self):
+        """Claims provided in any order are sorted by position before processing."""
+        original = "AAA BBB CCC DDD EEE"
+        # Provide claims in reverse order
+        claim2 = FakeClaim(
+            source_span="DDD",
+            source_span_start=12,
+            source_span_end=15,
+            claim_text="claim D",
+        )
+        claim1 = FakeClaim(
+            source_span="BBB",
+            source_span_start=4,
+            source_span_end=7,
+            claim_text="claim B",
+        )
+
+        llm_response = '[{"index": 1, "replacement_text": "XXX"}, {"index": 2, "replacement_text": "YYY"}]'
+        fake_llm = FakeLLMRouter(response=llm_response)
+        engine = PersonalizationEngine(llm_router=fake_llm)
+
+        result = await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[claim2, claim1],  # reverse order
+            beneficiary_context={},
+        )
+        # Should still be correct: BBB→XXX, DDD→YYY (sorted by position)
+        assert result == "AAA XXX CCC YYY EEE"
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_grounding_constraint(self):
+        """The regeneration prompt includes GROUNDING_CONSTRAINT_INJECTION."""
+        original = "Some text with a fake claim here."
+        claim = FakeClaim(
+            source_span="fake claim",
+            source_span_start=17,
+            source_span_end=27,
+            claim_text="fake claim",
+        )
+
+        llm_response = '[{"index": 1, "replacement_text": "real fact"}]'
+        fake_llm = FakeLLMRouter(response=llm_response)
+        engine = PersonalizationEngine(llm_router=fake_llm)
+
+        await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[claim],
+            beneficiary_context={"baseline_assets": {"resume": "Senior developer."}},
+        )
+
+        # Check that the prompt sent to LLM includes key grounding elements
+        assert "CRITICAL GROUNDING CONSTRAINT" in fake_llm.last_prompt
+        assert "BENEFICIARY PROFILE ASSETS" in fake_llm.last_prompt
+        assert "Senior developer." in fake_llm.last_prompt
+        assert "Replace ONLY" in fake_llm.last_prompt
+
+    @pytest.mark.asyncio
+    async def test_prompt_includes_excluded_passages(self):
+        """The prompt lists the specific passages to regenerate."""
+        original = "Some text with a fake claim here."
+        claim = FakeClaim(
+            source_span="fake claim",
+            source_span_start=17,
+            source_span_end=27,
+            claim_text="fake claim",
+        )
+
+        llm_response = '[{"index": 1, "replacement_text": "real fact"}]'
+        fake_llm = FakeLLMRouter(response=llm_response)
+        engine = PersonalizationEngine(llm_router=fake_llm)
+
+        await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[claim],
+            beneficiary_context={},
+        )
+
+        assert "fake claim" in fake_llm.last_prompt
+        assert "17:27" in fake_llm.last_prompt
+
+    @pytest.mark.asyncio
+    async def test_llm_called_with_regeneration_material_type(self):
+        """LLM is called with material_type='regeneration'."""
+        original = "Some text with a fake claim here."
+        claim = FakeClaim(
+            source_span="fake claim",
+            source_span_start=17,
+            source_span_end=27,
+            claim_text="fake claim",
+        )
+
+        llm_response = '[{"index": 1, "replacement_text": "real fact"}]'
+        fake_llm = FakeLLMRouter(response=llm_response)
+        engine = PersonalizationEngine(llm_router=fake_llm)
+
+        await engine.regenerate_passages(
+            material_id="mat-1",
+            material_text=original,
+            excluded_claims=[claim],
+            beneficiary_context={},
+        )
+
+        assert fake_llm.last_material_type == "regeneration"
+
+
+class TestParseRegenerationResponse:
+    """Test _parse_regeneration_response() parsing logic."""
+
+    def test_valid_json_array(self):
+        """Valid JSON array is parsed correctly."""
+        engine = PersonalizationEngine(llm_router=FakeLLMRouter())
+        claims = [FakeClaim("a", 0, 1, "c1"), FakeClaim("b", 5, 6, "c2")]
+
+        response = '[{"index": 1, "replacement_text": "x"}, {"index": 2, "replacement_text": "y"}]'
+        result = engine._parse_regeneration_response(response, claims)
+        assert result == ["x", "y"]
+
+    def test_json_in_markdown_code_block(self):
+        """JSON wrapped in markdown code fences is handled."""
+        engine = PersonalizationEngine(llm_router=FakeLLMRouter())
+        claims = [FakeClaim("a", 0, 1, "c1")]
+
+        response = '```json\n[{"index": 1, "replacement_text": "replaced"}]\n```'
+        result = engine._parse_regeneration_response(response, claims)
+        assert result == ["replaced"]
+
+    def test_missing_index_uses_original_span(self):
+        """Missing replacement for an index keeps original span."""
+        engine = PersonalizationEngine(llm_router=FakeLLMRouter())
+        claims = [FakeClaim("original1", 0, 9, "c1"), FakeClaim("original2", 15, 24, "c2")]
+
+        # Only provides replacement for index 1
+        response = '[{"index": 1, "replacement_text": "new1"}]'
+        result = engine._parse_regeneration_response(response, claims)
+        assert result == ["new1", "original2"]
+
+    def test_non_json_fallback(self):
+        """Non-JSON response uses raw text as fallback for first claim."""
+        engine = PersonalizationEngine(llm_router=FakeLLMRouter())
+        claims = [FakeClaim("old1", 0, 4, "c1"), FakeClaim("old2", 10, 14, "c2")]
+
+        response = "Here is the replacement text."
+        result = engine._parse_regeneration_response(response, claims)
+        assert result[0] == "Here is the replacement text."
+        assert result[1] == "old2"  # Keeps original for remaining claims
